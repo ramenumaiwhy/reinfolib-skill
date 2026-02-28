@@ -11,10 +11,10 @@
 
 ## 前提条件（不動産鑑定実務基準に基づく）
 
-- **時間的範囲**: 直近3年（時点修正が有効な範囲）
-- **地理的範囲**: 同一需給圏内（同一 DistrictName）
+- **時間的範囲**: 直近3年（運用上の便宜的範囲。市況変動が大きい局面では短縮を検討）
+- **地理的範囲**: 同一需給圏内（同一 DistrictName。広域比較が必要な場合は隣接地域も参照）
 - **有効件数**: 土地のみ取引3件以上で暫定参考値、20件以上で信頼度高
-- **異常値除外**: 取引価格が10万円以下は特殊事情として除外
+- **異常値除外**: 坪単価が地域中央値の1/5以下（特殊事情の可能性）。件数不足時は TradePrice ≤ 10万円をフォールバック基準とする
 
 ## MCPツールの準備
 
@@ -87,7 +87,7 @@ for item in land_only:
     if area_m2 > 0:
         tsubo_price = price / area_m2 * 3.30579  # 坪単価
         # 一種単価 = 坪単価 ÷ (容積率 / 100)
-        # 容積率は Step 2 または item の FloorAreaRatio から取得
+        # 容積率は item の FloorAreaRatio（指定容積率）を使用。前面道路制限による実効容積率は未考慮
         floor_area_ratio = float(item.get("FloorAreaRatio") or 0)
         ikishu_price = (tsubo_price / (floor_area_ratio / 100)) if floor_area_ratio > 0 else None
 ```
@@ -102,22 +102,27 @@ Type=「宅地(土地と建物)」**のみ**をフィルタ。「中古マンシ
 
 #### 建物残価の簡易推定
 
-法定耐用年数:
+法定耐用年数（住宅用途、減価償却資産の耐用年数等に関する省令 別表第一）:
 - 木造(W): 22年
-- 軽量鉄骨(LS): 27年
-- 重量鉄骨(S): 34年
+- 軽量鉄骨・肉厚3mm以下(LS-thin): 19年
+- 軽量鉄骨・肉厚3mm超4mm以下(LS): 27年
+- 重量鉄骨・肉厚4mm超(S): 34年
 - RC/SRC: 47年
 
-標準建築費単価（2024年建築着工統計・住宅用途・全国平均）:
-- 木造: 22万円/㎡
-- 鉄骨(LS/S): 31万円/㎡
-- RC/SRC: 37万円/㎡
+※ XIT001データのStructureフィールドでは肉厚を判別できないため、「軽量鉄骨造」は27年（保守的に長い方）を適用する。
 
-Structure フィールドの判定:
-- 「木造」「ＷＳ（木造ストーンウォール）」→ 木造
+標準建築費単価（2024年建築着工統計 第34表・住宅・全国計・1㎡あたり工事費予定額）:
+- 木造: 21.5万円/㎡
+- 鉄骨造(LS/S): 32.5万円/㎡
+- RC: 33.4万円/㎡
+- SRC: 33.5万円/㎡
+
+Structure フィールドの判定（順序重要 — SRC/RCを鉄骨より先に判定すること）:
+- 「ＳＲＣ（鉄骨鉄筋コンクリート造）」→ SRC
+- 「ＲＣ（鉄筋コンクリート造）」→ RC
 - 「軽量鉄骨造」→ LS
 - 「鉄骨造」→ S
-- 「ＲＣ（鉄筋コンクリート造）」「ＳＲＣ（鉄骨鉄筋コンクリート造）」→ RC/SRC
+- 「木造」「ＷＳ（木造ストーンウォール）」→ 木造
 
 計算式:
 ```python
@@ -146,17 +151,19 @@ def estimate_land_price(item):
         return None
     age = current_year - built_year
 
-    # 耐用年数・建築費単価の判定
-    if "木造" in structure or "ＷＳ" in structure:
-        useful_life, unit_cost = 22, 220000
+    # 耐用年数・建築費単価の判定（SRC/RCを鉄骨より先に判定 — SRCに「鉄骨」が含まれるため）
+    if "ＳＲＣ" in structure:
+        useful_life, unit_cost = 47, 335000
+    elif "ＲＣ" in structure:
+        useful_life, unit_cost = 47, 334000
     elif "軽量鉄骨" in structure:
-        useful_life, unit_cost = 27, 310000
+        useful_life, unit_cost = 27, 325000
     elif "鉄骨" in structure:
-        useful_life, unit_cost = 34, 310000
-    elif "ＲＣ" in structure or "ＳＲＣ" in structure:
-        useful_life, unit_cost = 47, 370000
+        useful_life, unit_cost = 34, 325000
+    elif "木造" in structure or "ＷＳ" in structure:
+        useful_life, unit_cost = 22, 215000
     else:
-        useful_life, unit_cost = 22, 220000  # 不明時は木造として保守的に推定
+        useful_life, unit_cost = 22, 215000  # 不明時は木造として保守的に推定
 
     # 建物残価 = 建築費単価 × 延床面積 × max(0, 1 - 築年数/耐用年数)
     remaining_ratio = max(0, 1 - age / useful_life)
@@ -171,8 +178,13 @@ def estimate_land_price(item):
 
 
 def convert_japanese_year(year_str):
-    """和暦を西暦に変換"""
+    """和暦・西暦を西暦に変換"""
     import re
+    if not year_str:
+        return None
+    # 元年対応: 「令和元年」→「令和1年」
+    year_str = year_str.replace("元年", "1年")
+    # 和暦パターン
     patterns = [
         (r"令和(\d+)年", lambda m: 2018 + int(m.group(1))),
         (r"平成(\d+)年", lambda m: 1988 + int(m.group(1))),
@@ -182,7 +194,10 @@ def convert_japanese_year(year_str):
         m = re.search(pattern, year_str)
         if m:
             return converter(m)
-    # 戦前のデータ等
+    # 西暦表記（"2024年" 等）
+    m = re.search(r"(\d{4})年", year_str)
+    if m:
+        return int(m.group(1))
     return None
 ```
 
@@ -197,10 +212,12 @@ def convert_japanese_year(year_str):
 ### 7. 異常値除外
 
 以下のレコードを除外:
-- TradePrice ≤ 10万円（特殊事情の可能性）
+- 坪単価が地域中央値の1/5以下（特殊事情の可能性）。中央値算出前の初回フィルタとして TradePrice ≤ 10万円をフォールバック適用
 - 推定土地価格 ≤ 0（建物込みの場合）
 
 ### 8. 妥当性判定基準
+
+※ 以下は運用上の便宜的閾値であり、不動産鑑定評価基準に定める公式基準ではない。実際の鑑定では事情補正・時点修正・地域要因・個別要因の比較が必要。
 
 | 乖離率 | 判定 | 説明 |
 |---------|------|------|
@@ -250,4 +267,4 @@ def convert_japanese_year(year_str):
 
 - 件数が3件未満の場合は「データ不足のため暫定参考値」と明記
 - API の rate limit に注意（連続呼び出し間に1秒の待機を入れる）
-- 取引時期による価格変動は考慮しない（3年の範囲内であれば時点修正は小さいと仮定）
+- 取引時期による価格変動は考慮しない（3年の範囲内であれば時点修正は小さいと仮定）。ただし急騰・急落局面では2年に短縮を検討すること
