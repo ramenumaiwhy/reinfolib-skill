@@ -1,21 +1,51 @@
 # reinfolib-skill
 
-Claude Code スキル。住所を入力するだけで、国土交通省の不動産取引データから坪単価・一種単価のレンジを自動分析する。
+Claude Code スキル。住所を伝えるだけで、国土交通省の不動産取引データから坪単価・一種単価のレンジを自動分析する。
 
-コードは1行も書いていない。SKILL.md 1ファイルで全て動く。
+SKILL.md 1ファイルで全ロジックが完結。コードは1行も書いていない。
 
-## 前提
+## セットアップ
 
-- [mlit-geospatial-mcp](https://github.com/ramenumaiwhy/mlit-geospatial-mcp) が MCP サーバーとして稼働していること
-- 不動産情報ライブラリの [API キー（無料）](https://www.reinfolib.mlit.go.jp/help/apiManual/) を取得済みであること
+### 1. API キーを取得する（無料）
 
-## インストール
+[不動産情報ライブラリ API 利用申請](https://www.reinfolib.mlit.go.jp/help/apiManual/) からAPIキーを取得する。
 
-SKILL.md を Claude Code のスキルディレクトリにコピーする。
+### 2. MCP サーバーを入れる
+
+このスキルは [mlit-geospatial-mcp](https://github.com/chirikuuka/mlit-geospatial-mcp)（国交省 API との橋渡し）が必要。
 
 ```bash
-mkdir -p ~/.claude/skills/reinfolib
-cp SKILL.md ~/.claude/skills/reinfolib/SKILL.md
+git clone https://github.com/chirikuuka/mlit-geospatial-mcp.git
+cd mlit-geospatial-mcp
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Claude Code に MCP サーバーを登録する
+
+`.mcp.json` をプロジェクトルートに作成するか、グローバル設定に追加する。
+
+```json
+{
+  "mcpServers": {
+    "mlit-geospatial-mcp": {
+      "command": "/absolute/path/to/mlit-geospatial-mcp/.venv/bin/python",
+      "args": ["/absolute/path/to/mlit-geospatial-mcp/src/server.py"],
+      "env": {
+        "LIBRARY_API_KEY": "あなたのAPIキー"
+      }
+    }
+  }
+}
+```
+
+`/absolute/path/to/` は実際のパスに置き換える。
+
+### 4. スキルをインストールする
+
+```bash
+npx skills add ramenumaiwhy/reinfolib-skill
 ```
 
 ## 使い方
