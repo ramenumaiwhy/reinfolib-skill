@@ -36,7 +36,7 @@ ToolSearch: "+mlit"
 ```bash
 python3 -c "
 import json, sys, urllib.request, urllib.parse
-q = '<住所>'
+q = sys.argv[1]
 url = 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=' + urllib.parse.quote(q)
 data = json.loads(urllib.request.urlopen(url).read())
 if data:
@@ -45,8 +45,10 @@ if data:
 else:
     print('ERROR: 住所が見つかりません')
     sys.exit(1)
-"
+" '<住所>'
 ```
+
+`<住所>` はシェル引数として渡す。文字列埋め込みではなく `sys.argv[1]` で受け取ることで、住所にクオートや特殊文字が含まれてもコード注入を防ぐ。
 
 失敗時はエラー報告して終了。
 
@@ -214,10 +216,20 @@ def convert_japanese_year(year_str):
 
 **注意**: この推定は簡易的なものであり、リフォーム・個別品質・設備は未考慮。**参考値**として提示し、判定の主軸にはしない。
 
-### 7. 異常値除外
+### 7. 異常値除外（2パス）
 
-以下のレコードを除外:
-- 坪単価が地域中央値の1/5以下（特殊事情の可能性）。中央値算出前の初回フィルタとして TradePrice ≤ 10万円をフォールバック適用
+**1パス目**（Step 5 で適用済み）: TradePrice ≤ 10万円を除外
+
+**2パス目**: 1パス目の結果から中央値を算出し、中央値の1/5以下を除外:
+```python
+import statistics
+tsubo_prices = [r["tsubo_price"] for r in results if r["tsubo_price"] is not None]
+if len(tsubo_prices) >= 3:
+    median = statistics.median(tsubo_prices)
+    results = [r for r in results if r["tsubo_price"] is None or r["tsubo_price"] >= median / 5]
+```
+
+追加の除外:
 - 推定土地価格 ≤ 0（建物込みの場合）
 
 ### 8. 妥当性判定基準
@@ -273,3 +285,5 @@ def convert_japanese_year(year_str):
 - 件数が3件未満の場合は「データ不足のため暫定参考値」と明記
 - API の rate limit に注意（連続呼び出し間に1秒の待機を入れる）
 - 取引時期による価格変動は考慮しない（3年の範囲内であれば時点修正は小さいと仮定）。ただし急騰・急落局面では2年に短縮を検討すること
+- 出力はターミナル（Markdown テキスト）に限定する。HTML 等にレンダリングする場合は住所・地名のエスケープを行うこと
+- API 呼び出しに失敗した場合は、エラー内容（ステータスコード・エンドポイント）をレポートに含めること（APIキーは表示しない）

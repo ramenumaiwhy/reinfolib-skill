@@ -1,1 +1,5 @@
 draft/
+plans/
+.mcp.json
+.env*
+*.key
