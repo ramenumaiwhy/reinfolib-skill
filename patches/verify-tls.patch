@@ -1,0 +1,109 @@
+--- a/src/request_processor/common/change_address.py
++++ b/src/request_processor/common/change_address.py
+@@ -96,5 +96,9 @@
+             "Ocp-Apim-Subscription-Key": LIBRARY_API_KEY,
+         },
+-        verify=False,
++        timeout=30,
++        allow_redirects=False,
+     )
++    if 300 <= response.status_code < 400:
++        raise ValueError(f"国交省APIがリダイレクトを返しました ({response.status_code})")
++    response.raise_for_status()
+     return response.json()
+--- a/src/request_processor/common/requester.py
++++ b/src/request_processor/common/requester.py
+@@ -14,5 +14,7 @@
+ 
+     try:
+-        response = requests.get(url, headers=headers, params=params, verify=False)
++        response = requests.get(url, headers=headers, params=params, timeout=30, allow_redirects=False)
++        if 300 <= response.status_code < 400:
++            raise ValueError(f"国交省APIがリダイレクトを返しました ({response.status_code})")
+         response.raise_for_status()
+ 
+@@ -23,4 +25,3 @@
+     except Exception as e:
+         logger.error(f"API呼び出し失敗 URL:{url} params:{params} エラー:{e}")
+-        #     空配列で処理継続
+-        return {"data": []}
++        raise
+--- a/src/request_processor/service/apis/real_estate_api1.py
++++ b/src/request_processor/service/apis/real_estate_api1.py
+@@ -51,7 +51,11 @@
+     def _process_data(self, data):
+         try:
+-            if not data or "data" not in data:
++            if not isinstance(data, dict) or not isinstance(data.get("data"), list) or data.get("status", "OK") != "OK":
+                 self.logger.info("APIから有効なデータが取得できませんでした。")
+                 return None
++
++            empty = {"type": "FeatureCollection", "features": []}
++            if not data["data"]:
++                return empty
+ 
+             # 絞り込み処理
+@@ -60,18 +64,38 @@
+             municipality = get_cityname(self.converted["muni_cd"])
+             district_name = get_district_name(self.converted["lv_01_nm"])
++            if not (prefecture and municipality and district_name):
++                return None
+             full_addr = f"{prefecture}{municipality}{district_name}"
+ 
+             # 検索座標と同じ地名のデータを取得
+-            filter_data = [
+-                item
+-                for item in data["data"]
+-                if item.get("Prefecture") == prefecture
+-                and item.get("Municipality") == municipality
+-                and item.get("DistrictName") == district_name
+-            ]
++            filter_data = []
++            has_unknown_district = False
++            for item in data["data"]:
++                if not isinstance(item, dict):
++                    has_unknown_district = True
++                    continue
++                district = (item.get("DistrictName") or "").strip()
++                pref = (item.get("Prefecture") or "").strip()
++                code = str(item.get("MunicipalityCode") or "").strip()
++                city = (item.get("Municipality") or "").strip()
++
++                if (district and district != district_name) or (pref and pref != prefecture):
++                    continue
++                if code.isascii() and code.isdigit() and len(code) == 5:
++                    if code != self.converted["muni_cd"]:
++                        continue
++                else:
++                    if city and city != municipality and not (municipality.endswith("区") and city.endswith(municipality)):
++                        continue
++                    if not (pref and city):
++                        has_unknown_district = True
++                        continue
++                if district:
++                    filter_data.append(item)
++                else:
++                    has_unknown_district = True
+ 
+             if not filter_data:
+-                self.logger.info("該当データなし")
+-                return None
++                return None if has_unknown_district else empty
+ 
+             # ジオコーダで緯度経度を取得
+--- a/src/utils/geocoder.py
++++ b/src/utils/geocoder.py
+@@ -9,5 +9,4 @@
+         f"{RGEOCODER_URL}?q={full_addr}",
+         headers={"User-Agent": "REINS-Client"},
+-        verify=False,
+     )
+ 
+--- a/src/utils/reverse_geocoder.py
++++ b/src/utils/reverse_geocoder.py
+@@ -9,5 +9,4 @@
+         f"{RE_RGEOCODER_URL}?lat={lat}&lon={lon}",
+         headers={"User-Agent": "REINS-Client"},
+-        verify=False,
+     )
+     if response.status_code == 200:

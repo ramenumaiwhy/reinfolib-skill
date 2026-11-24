@@ -1,79 +1,50 @@
-# reinfolib-skill
+# 土地の相場を調べる Claude Code スキル
 
-Claude Code スキル。住所を伝えるだけで、国土交通省の不動産取引データから坪単価・一種単価のレンジを自動分析する。
-
-SKILL.md 1ファイルで全ロジックが完結。コードは1行も書いていない。
-
-## 前提条件
-
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) がインストール済み
-- Python 3.8 以上（MCP サーバーの実行に必要）
+「東京都港区赤坂一丁目の土地の相場は？」と質問すると、国土交通省「不動産情報ライブラリ」から同じ地区の取引事例を集め、用途地域ごとに坪単価と一種単価の件数・最小値・中央値・最大値を返します。土地のみの取引を主に使い、土地と建物の一括取引から求めた推定値は参考欄に載せます。
 
 ## セットアップ
 
-### 1. API キーを取得する（無料）
+Claude Code、Python 3.10以上、[不動産情報ライブラリのAPIキー](https://www.reinfolib.mlit.go.jp/api/request/)を用意します。以下はmacOS・Linuxの例です。
 
-[不動産情報ライブラリ API 利用申請](https://www.reinfolib.mlit.go.jp/help/apiManual/) からAPIキーを取得する。
+1. Claude Codeを使うプロジェクトにスキルを配置します。
 
-### 2. MCP サーバーを入れる
+   ```bash
+   git clone https://github.com/ramenumaiwhy/reinfolib-skill.git .claude/skills/reinfolib-skill
+   ```
 
-このスキルは [mlit-geospatial-mcp](https://github.com/chirikuuka/mlit-geospatial-mcp)（国交省 API との橋渡し）が必要。
+2. 同じディレクトリから [mlit-geospatial-mcp](https://github.com/chirikuuka/mlit-geospatial-mcp) をセットアップします。固定版は通信時の証明書検証を無効にしているため、同梱の差分で証明書検証を有効にし、キー付き通信のリダイレクトを止めます。差分は取引0件と取得失敗を別の応答として返し、政令指定都市の区名表記にも対応します。サーバーが使うMCP SDKは1系です。
 
-```bash
-git clone https://github.com/chirikuuka/mlit-geospatial-mcp.git
-cd mlit-geospatial-mcp
-git checkout dca3fd3  # 動作確認済みバージョンに固定
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+   ```bash
+   git clone https://github.com/chirikuuka/mlit-geospatial-mcp.git
+   (
+     cd mlit-geospatial-mcp || exit 1
+     git checkout dca3fd3 &&
+       git apply ../.claude/skills/reinfolib-skill/patches/verify-tls.patch &&
+       python3 -m venv .venv &&
+       .venv/bin/python -m pip install -r requirements.txt 'mcp>=1,<2'
+   )
+   ```
 
-### 3. Claude Code に MCP サーバーを登録する
+3. プロジェクトの `.mcp.json` にサーバーを登録します。2か所のパスは手順2の配置先に置き換えます。キーはClaude Codeを起動する環境の `LIBRARY_API_KEY` に設定します。
 
-`.mcp.json` をプロジェクトルートに作成するか、`~/.claude/.mcp.json`（グローバル設定）に追加する。
+   ```json
+   {
+     "mcpServers": {
+       "mlit-geospatial-mcp": {
+         "command": "/absolute/path/to/mlit-geospatial-mcp/.venv/bin/python",
+         "args": ["/absolute/path/to/mlit-geospatial-mcp/src/server.py"],
+         "env": { "LIBRARY_API_KEY": "${LIBRARY_API_KEY}" }
+       }
+     }
+   }
+   ```
 
-> **注意**: `.mcp.json` には API キーが含まれます。このリポジトリの `.gitignore` で除外済みですが、他のプロジェクトで使う場合は `git add` しないよう注意してください。
+4. プロジェクトでClaude Codeを起動し、`/mcp` で接続を確認します。住所は市区町村と町名までで調べられます。住所検索には国土地理院、取引の取得には上記のMCPサーバーを使います。
 
-```json
-{
-  "mcpServers": {
-    "mlit-geospatial-mcp": {
-      "command": "/absolute/path/to/mlit-geospatial-mcp/.venv/bin/python",
-      "args": ["/absolute/path/to/mlit-geospatial-mcp/src/server.py"],
-      "env": {
-        "LIBRARY_API_KEY": "あなたのAPIキー"
-      }
-    }
-  }
-}
-```
+## 結果の読み方
 
-`/absolute/path/to/` は実際のパスに置き換える。
+一種単価は土地の坪単価を指定容積率の倍率で割った値です。容積率200%なら坪単価の半分になります。レポートには取得できた年と集計件数を載せます。建物残価は構造・築年・延床面積からの簡易推定です。
 
-### 4. スキルをインストールする
+## 同じ取引データを使う作品
 
-```bash
-npx skills add ramenumaiwhy/reinfolib-skill
-```
-
-## 使い方
-
-Claude Code に話しかけるだけ。
-
-```
-赤坂1丁目の土地の相場教えて
-```
-
-## 出力内容
-
-- 用途地域・建蔽率・容積率
-- 地価公示（最寄り）
-- 土地のみ取引の坪単価レンジ（用途地域別・最小/中央値/最大）
-- 一種単価（容積率を考慮した比較指標）
-- 建物込み取引からの推定土地坪単価（参考値）
-
-## データソース
-
-[国土交通省 不動産情報ライブラリ](https://www.reinfolib.mlit.go.jp/) API を使用。
-
-> このサービスは、国土交通省不動産情報ライブラリのAPI機能を使用していますが、提供情報の最新性、正確性、完全性等が保証されたものではありません。
+ColabやWebで土地を分析する入口は [reinfolib-service](https://github.com/ramenumaiwhy/reinfolib-service)、中古マンションの売出㎡単価を周辺取引と比較する入口は、そのフォークの [mansion-checker](https://github.com/ramenumaiwhy/mansion-checker) です。
